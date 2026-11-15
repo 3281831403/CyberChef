@@ -22,7 +22,7 @@ class Fork extends Operation {
         this.name = "Fork";
         this.flowControl = true;
         this.module = "Default";
-        this.description = "Split the input data up based on the specified delimiter and run all subsequent operations on each branch separately.<br><br>For example, to decode multiple Base64 strings, enter them all on separate lines then add the 'Fork' and 'From Base64' operations to the recipe. Each string will be decoded separately.";
+        this.description = "Split the input data up based on the specified delimiter and run all subsequent operations on each branch separately.<br><br>For example, to decode multiple Base64 strings, enter them all on separate lines then add the 'Fork' and 'From Base64' operations to the recipe. Each string will be decoded separately.<br><br>If 'Ignore errors' is enabled, any branch whose operations fail is dropped from the output while the remaining branches are merged in their original order using the merge delimiter. If every branch fails, the output is an empty string. If 'Ignore errors' is disabled, the recipe stops at the first failed branch and the failing operation's error is returned as the output.";
         this.inputType = "string";
         this.outputType = "string";
         this.args = [
@@ -88,6 +88,11 @@ class Fork extends Operation {
         const outputs = [];
         let progress = 0;
 
+        // Position of this Fork in the enclosing recipe. The sub-recipe's local
+        // indices are offset by this amount, so error progress reported from a
+        // branch has to be translated back into an enclosing-recipe index.
+        const forkProgress = state.progress;
+
         state.forkOffset += state.progress + 1;
 
         recipe.addOperations(subOpList);
@@ -109,9 +114,20 @@ class Fork extends Operation {
                 progress = await recipe.execute(dish, 0, state);
             } catch (err) {
                 if (!ignoreErrors) {
+                    // Stop the whole recipe at the first failed branch. Translate the
+                    // failing operation's local branch index into its index in the
+                    // enclosing recipe, however deeply nested this Fork is.
+                    err.progress = forkProgress + 1 + err.progress;
+                    err.forkProgressSet = true;
+                    // Surface the error message as the recipe output, matching what a
+                    // single failing operation outside a Fork would produce.
+                    state.dish.set(err.message, "string");
                     throw err;
                 }
+                // Ignore errors: drop this branch entirely and keep processing the
+                // remaining ones, preserving the order of the survivors.
                 progress = err.progress + 1;
+                continue;
             }
             outputs.push(await dish.get(outputType));
         }

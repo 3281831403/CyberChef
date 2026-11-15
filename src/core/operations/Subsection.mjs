@@ -22,7 +22,7 @@ class Subsection extends Operation {
         this.name = "Subsection";
         this.flowControl = true;
         this.module = "Default";
-        this.description = "Select a part of the input data using a regular expression (regex), and run all subsequent operations on each match separately.<br><br>You can use up to one capture group, where the recipe will only be run on the data in the capture group. If there's more than one capture group, only the first one will be operated on.<br><br>Use the Merge operation to reset the effects of subsection.";
+        this.description = "Select a part of the input data using a regular expression (regex), and run all subsequent operations on each match separately.<br><br>You can use up to one capture group, where the recipe will only be run on the data in the capture group. If there's more than one capture group, only the first one will be operated on.<br><br>Use the Merge operation to reset the effects of subsection.<br><br>If 'Ignore errors' is enabled, any match whose operations fail is kept unchanged in the output, with the surrounding original text preserved, while the other matches are still processed. If it is disabled, the recipe stops at the first failed match and the failing operation's error is returned as the output.";
         this.infoURL = "";
         this.inputType = "string";
         this.outputType = "string";
@@ -99,6 +99,10 @@ class Subsection extends Operation {
                 recipe = new Recipe();
 
             recipe.addOperations(subOpList);
+            // Position of this Subsection in the enclosing recipe. Local branch
+            // indices are offset by this amount, so error progress has to be
+            // translated back into an enclosing-recipe index.
+            const subsectionProgress = state.progress;
             state.forkOffset += state.progress + 1;
 
             // Take a deep(ish) copy of the ingredient values
@@ -135,9 +139,24 @@ class Subsection extends Operation {
                     progress = await recipe.execute(dish, 0, state);
                 } catch (err) {
                     if (!ignoreErrors) {
+                        // Stop the whole recipe at the first failed match. Translate
+                        // the failing operation's local index into its index in the
+                        // enclosing recipe, however deeply nested this Subsection is.
+                        err.progress = subsectionProgress + 1 + err.progress;
+                        err.forkProgressSet = true;
+                        // Surface the error message as the recipe output, matching
+                        // what a single failing operation outside a Subsection gives.
+                        state.dish.set(err.message, "string");
                         throw err;
                     }
+                    // Ignore errors: keep the matched section as it was in the
+                    // original input instead of appending any transformed output.
+                    // Text outside the match (or outside the capture group) is
+                    // already preserved by the slices above.
                     progress = err.progress + 1;
+                    output += matchStr;
+                    if (!regex.global) break;
+                    continue;
                 }
                 output += await dish.get(outputType);
                 if (!regex.global) break;

@@ -184,6 +184,11 @@ class Recipe  {
         let op, input, output,
             numJumps = 0,
             numRegisters = forkState.numRegisters || 0;
+        // A forked recipe is one being run inside a Fork or Subsection operation.
+        // Errors inside it must be surfaced to that operation rather than handled as
+        // top-level recipe output, so the operation can either skip the failed branch
+        // or stop the whole recipe according to its Ignore errors setting.
+        const isForkedRecipe = Object.keys(forkState).length > 0;
 
         if (startFrom === 0) this.lastRunOp = null;
 
@@ -236,14 +241,37 @@ class Recipe  {
                 this.lastRunOp = op;
             } catch (err) {
                 log.error(err);
+                // Errors already translated by an enclosing Fork/Subsection keep
+                // the progress it calculated; only the enclosing recipe is left to
+                // surface them through its normal error handling.
+                if (err?.forkProgressSet) {
+                    // Fork/Subsection has already translated the progress and
+                    // written the error message onto the dish; just surface it.
+                    if (!err.displayStr) err.displayStr = err.message;
+                    this.lastRunOp = null;
+                    throw err;
+                }
                 // Return expected errors as output
                 if (err instanceof OperationError || err?.type === "OperationError") {
                     // Cannot rely on `err instanceof OperationError` here as extending
                     // native types is not fully supported yet.
+                    if (isForkedRecipe) {
+                        // Hand the error back to the enclosing Fork/Subsection
+                        // operation. Record the local index of the failing
+                        // operation at the level where the error originates;
+                        // enclosing levels leave the value untouched so the
+                        // deepest failure position survives.
+                        if (typeof err.progress !== "number") err.progress = i;
+                        throw err;
+                    }
                     dish.set(err.message, "string");
                     this.lastRunOp = null;
                     return i;
                 } else if (err instanceof DishError || err?.type === "DishError") {
+                    if (isForkedRecipe) {
+                        if (typeof err.progress !== "number") err.progress = i;
+                        throw err;
+                    }
                     dish.set(err.message, "string");
                     this.lastRunOp = null;
                     return i;
